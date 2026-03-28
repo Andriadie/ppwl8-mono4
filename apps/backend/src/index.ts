@@ -128,7 +128,7 @@ const app = new Elysia()
 
     if (!tokens) {
       set.status = 401;
-      return { error: "Unauthorized. Silakan login terlebih dahulu." };
+      return { error: "Unauthorized. Silakan login terlebih dahulu ya." };
     }
 
     const courses = await getCourses(tokens.access_token);
