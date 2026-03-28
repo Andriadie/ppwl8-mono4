@@ -6,12 +6,51 @@ import { prisma } from "../prisma/db";
 import { createOAuthClient, getAuthUrl } from "./auth";
 import { getCourses, getCourseWorks, getSubmissions } from "./classroom";
 import type { ApiResponse, HealthCheck, User } from "shared";
+import * as path from "path";
+import * as fs from "fs";
 
-// Simple in-memory token store (ganti dengan database/session untuk production)
+// Simple in-memory token store
 const tokenStore = new Map<string, { access_token: string; refresh_token?: string }>();
 
+// !!! Fungsi Pengecekan Browser (Instruksi UTS)
+const isBrowserRequest = (request: Request): boolean => {
+  const origin = request.headers.get("origin");
+  const referer = request.headers.get("referer");
+  const accept = request.headers.get("accept") ?? "";
+
+  // Browser biasanya kirim Accept: text/html
+  const acceptsHtml = accept.includes("text/html");
+
+  // Tidak ada origin & referer = direct browser access / curl
+  return acceptsHtml && !origin && !referer;
+};
+
 const app = new Elysia()
-  .use(cors({ origin: ["http://localhost:5173", "http://localhost:5174"], credentials: true }))
+  // !!! Modifikasi CORS menggunakan ENV (Instruksi UTS)
+  .use(cors({ origin: [process.env.FRONTEND_URL ?? "", process.env.TEST_URL ?? ""] }))
+  
+  // !!! Logika Keamanan onRequest (Instruksi UTS)
+  .onRequest(({ request, set }) => {
+    const url = new URL(request.url);
+    // HANYA jalankan logika jika path dimulai dengan /users
+    if (url.pathname.startsWith("/users")) {
+      const origin = request.headers.get("origin");
+      const frontendUrl = process.env.FRONTEND_URL ?? "";
+
+      // Jika request dari FRONTEND_URL → langsung izinkan
+      if (origin && origin === frontendUrl) return;
+
+      // Jika akses dari browser langsung → wajib ada ?key=
+      if (isBrowserRequest(request)) {
+        const key = url.searchParams.get("key");
+
+        if (!key || key !== process.env.API_KEY) {
+          set.status = 401;
+          return { message: "Unauthorized: missing or invalid key" };
+        }
+      }
+    }
+  })
   .use(swagger())
   .use(cookie())
 
@@ -21,7 +60,7 @@ const app = new Elysia()
     message: "server running",
   }))
 
-  // Users (dari Phase 2)
+  // Users
   .get("/users", async () => {
     const users = await prisma.user.findMany();
     const response: ApiResponse<User[]> = {
@@ -32,15 +71,12 @@ const app = new Elysia()
   })
 
   // --- AUTH ROUTES ---
-
-  // Redirect mahasiswa ke halaman login Google
   .get("/auth/login", ({ redirect }) => {
     const oauth2Client = createOAuthClient();
     const url = getAuthUrl(oauth2Client);
     return redirect(url);
   })
 
-  // Google callback setelah login
   .get("/auth/callback", async ({ query, set, cookie: { session }, redirect }) => {
     const { code } = query as { code: string };
 
@@ -52,23 +88,21 @@ const app = new Elysia()
     const oauth2Client = createOAuthClient();
     const { tokens } = await oauth2Client.getToken(code);
 
-    // Simpan token dengan session ID sederhana
     const sessionId = crypto.randomUUID();
     tokenStore.set(sessionId, {
       access_token: tokens.access_token!,
       refresh_token: tokens.refresh_token ?? undefined,
     });
-    if (!session) return;
+    
+    if (session) {
+      session.value = sessionId;
+      session.maxAge = 60 * 60 * 24; // 1 hari
+    }
 
-    // Set cookie session
-    session.value = sessionId;
-    session.maxAge = 60 * 60 * 24; // 1 hari
-
-    // Redirect ke frontend
-    return redirect("http://localhost:5173/classroom");
+    // !!! Redirect menggunakan variabel ENV (Instruksi UTS)
+    return redirect(`${process.env.FRONTEND_URL}/classroom`);
   })
 
-  // Cek status login
   .get("/auth/me", ({ cookie: { session } }) => {
     const sessionId = session?.value as string;
     if (!sessionId || !tokenStore.has(sessionId)) {
@@ -77,7 +111,6 @@ const app = new Elysia()
     return { loggedIn: true, sessionId };
   })
 
-  // Logout
   .post("/auth/logout", ({ cookie: { session } }) => {
     if(!session) return { success: false };
 
@@ -90,8 +123,6 @@ const app = new Elysia()
   })
 
   // --- CLASSROOM ROUTES ---
-
-  // Ambil daftar courses mahasiswa
   .get("/classroom/courses", async ({ cookie: { session }, set }) => {
     const sessionId = session?.value as string;
     const tokens = sessionId ? tokenStore.get(sessionId) : null;
@@ -105,7 +136,6 @@ const app = new Elysia()
     return { data: courses, message: "Courses retrieved" };
   })
 
-  // Ambil coursework + submisi untuk satu course
   .get("/classroom/courses/:courseId/submissions", async ({ params, cookie: { session }, set }) => {
     const sessionId = session?.value as string;
     const tokens = sessionId ? tokenStore.get(sessionId) : null;
@@ -122,7 +152,6 @@ const app = new Elysia()
       getSubmissions(tokens.access_token, courseId),
     ]);
 
-    // Gabungkan coursework dengan submisi
     const submissionMap = new Map(submissions.map((s) => [s.courseWorkId, s]));
 
     const result = courseWorks.map((cw) => ({
@@ -133,9 +162,42 @@ const app = new Elysia()
     return { data: result, message: "Course submissions retrieved" };
   })
 
-  .listen(3000);
+  // !!! Endpoint Debug Prisma (Instruksi UTS)
+  // .get("/debug-prisma", () => {
+  //   const generatedPath = path.resolve(__dirname, "../src/generated/prisma/client");
+  //   const exists = fs.existsSync(generatedPath);
 
-console.log(`🦊 Backend → http://localhost:${app.server?.port}`);
-console.log(`📖 Swagger → http://localhost:${app.server?.port}/swagger`);
+  //   return {
+  //     path: generatedPath,
+  //     exists: exists,
+  //     files: exists ? fs.readdirSync(generatedPath) : []
+  //   };
+  // });
 
+  .get("/debug-prisma", () => {
+    // Sesuaikan dengan folder di gambar: src/generated/prisma/
+    const generatedPath = path.resolve(__dirname, "../src/generated/prisma");
+    const distPath = path.resolve(__dirname, "./generated/prisma");
+    
+    const existsInSrc = fs.existsSync(generatedPath);
+    const existsInDist = fs.existsSync(distPath);
+
+    return {
+      runtime_path: __dirname,
+      exists_in_src: existsInSrc,
+      exists_in_dist: existsInDist,
+      final_status: existsInSrc || existsInDist,
+      client_file_exists: fs.existsSync(path.join(generatedPath, "client.ts"))
+    };
+  })
+// !!! Pengaturan listen dan log (Instruksi UTS)
+if (process.env.NODE_ENV != "production") {
+  app.listen(3000);
+  console.log(`🦊 Backend → http://localhost:3000`);
+  console.log(`🦊 TEST_URL: ${process.env.TEST_URL}`);
+  console.log(`🦊 DATABASE_URL: ${process.env.DATABASE_URL}`);
+}
+
+// !!! Export app agar Elysia dapat dibaca Vercel (Instruksi UTS)
+export default app;
 export type App = typeof app;
