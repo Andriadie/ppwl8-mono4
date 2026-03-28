@@ -3,12 +3,13 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "lint": "eslint .",
-    "preview": "vite preview"
-  },
+  "dev": "vite",
+  "build": "tsc -b && vite build",
+  "lint": "eslint .",
+  "start": "bunx kill-port 4173 && vite preview"
+},
   "dependencies": {
     "shared": "workspace:*",
     "@fontsource-variable/geist": "^5.2.8",
